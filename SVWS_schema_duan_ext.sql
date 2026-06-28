@@ -1,19 +1,14 @@
--- ============================================================
--- Mở rộng cho module CRM (chạy SAU SVWS_schema.sql)
---   - lịch/lịch sử chăm sóc khách hàng (gồm khiếu nại, CSAT)
--- (Hồ sơ KH + phân loại ABC đã có sẵn trong bảng khach_hang)
--- ============================================================
-CREATE TABLE IF NOT EXISTS cham_soc_kh (
-    id           BIGSERIAL PRIMARY KEY,
-    khach_hang_id BIGINT NOT NULL REFERENCES khach_hang(id) ON DELETE CASCADE,
-    loai         VARCHAR(20) NOT NULL,            -- GOI / EMAIL / KHIEU_NAI / SINH_NHAT
-    noi_dung     VARCHAR(300),
-    ngay_hen     DATE,
-    ngay_thuc_hien DATE,
-    trang_thai   VARCHAR(20) NOT NULL DEFAULT 'CHO',   -- CHO / HOAN_THANH
-    csat         NUMERIC(2,1),                    -- điểm hài lòng 1..5
-    nguoi_phu_trach BIGINT REFERENCES nhan_vien(id),
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+-- ===== Chất lượng đầu vào / chỉ tiêu giới hạn đầu ra =====
+ALTER TABLE du_an ADD COLUMN IF NOT EXISTS tieu_chuan_dau_ra VARCHAR(160);
+
+CREATE TABLE IF NOT EXISTS du_an_chi_tieu (
+    id          BIGSERIAL PRIMARY KEY,
+    du_an_id    BIGINT NOT NULL REFERENCES du_an(id) ON DELETE CASCADE,
+    thu_tu      INT DEFAULT 0,
+    ten         VARCHAR(120) NOT NULL,        -- vd COD, BOD5, TSS, Độ màu, NH4-N, Bụi, SO2...
+    don_vi      VARCHAR(40),                  -- mg/L, Pt-Co, mg/Nm³...
+    gia_tri_vao NUMERIC(18,4),                -- chất lượng đầu vào (đo/thiết kế)
+    gioi_han_ra NUMERIC(18,4),                -- giới hạn kiểm soát đầu ra (theo tiêu chuẩn hoặc tự nhập)
+    ghi_chu     VARCHAR(200)                  -- vd "cột B", "pH 6-9", nguồn giá trị
 );
-CREATE INDEX IF NOT EXISTS idx_cham_soc_kh_kh  ON cham_soc_kh(khach_hang_id);
-CREATE INDEX IF NOT EXISTS idx_cham_soc_kh_hen ON cham_soc_kh(ngay_hen);
+CREATE INDEX IF NOT EXISTS idx_dactieu ON du_an_chi_tieu(du_an_id, thu_tu);

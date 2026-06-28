@@ -1,26 +1,27 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, DeclarativeBase
-from .config import settings
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.orm import Session
+import jwt
+from .database import get_db
+from .security import doc_token
+from .models import NguoiDung, NhanVien
 
-def _chuan_hoa_url(url: str) -> str:
-    if url.startswith("postgres://"):
-        url = "postgresql://" + url[len("postgres://"):]
-    if url.startswith("postgresql://"):
-        url = "postgresql+psycopg2://" + url[len("postgresql://"):]
-    return url
-
-
-engine = create_engine(_chuan_hoa_url(settings.database_url), pool_pre_ping=True, future=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
+oauth2 = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 
-class Base(DeclarativeBase):
-    pass
-
-
-def get_db():
-    db = SessionLocal()
+def lay_nguoi_dung_hien_tai(token: str = Depends(oauth2), db: Session = Depends(get_db)) -> NguoiDung:
+    loi = HTTPException(status.HTTP_401_UNAUTHORIZED, "Token không hợp lệ",
+                        headers={"WWW-Authenticate": "Bearer"})
     try:
-        yield db
-    finally:
-        db.close()
+        uid = doc_token(token)
+    except jwt.PyJWTError:
+        raise loi
+    nd = db.get(NguoiDung, uid)
+    if nd is None or nd.trang_thai != "HOAT_DONG":
+        raise loi
+    return nd
+
+
+def nhan_vien_id_cua(db: Session, nguoi_dung_id: int):
+    """Tìm nhan_vien tương ứng người dùng (để gán nguoi_tao trên phiếu)."""
+    return db.query(NhanVien.id).filter_by(nguoi_dung_id=nguoi_dung_id).scalar()

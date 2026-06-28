@@ -1,33 +1,31 @@
-import os
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-from .routers import (auth, kho, ncc, du_an, ban_hang, ke_toan, tai_chinh,
-                      nhan_su, cho_thue, crm, ban_hang_ext, ke_toan_quy, vay, quy_trich_lap,
-                      cau_hinh, nhan_su_kpi, cho_thue_ops)
-
-app = FastAPI(title="SVWS — Backend hợp nhất (9 module nghiệp vụ)")
-app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_credentials=False,
-    allow_methods=["*"], allow_headers=["*"],
-)
-for r in (auth, kho, ncc, du_an, ban_hang, ke_toan, tai_chinh, nhan_su, cho_thue, crm, ban_hang_ext, ke_toan_quy, vay, quy_trich_lap, cau_hinh, nhan_su_kpi, cho_thue_ops):
-    app.include_router(r.router)
+"""
+CỔNG HÓA ĐƠN ĐIỆN TỬ — lớp trừu tượng để KHÔNG tự dựng engine thuế.
+Thực tế: thay FakeProvider bằng SDK/API của MISA meInvoice / VNPT / Viettel
+(theo NĐ 70/2025, TT 32/2025). Ứng dụng chỉ gọi qua giao diện này.
+"""
+from typing import Protocol
 
 
-_HTML = os.path.join(os.path.dirname(__file__), "..", "svws_app.html")
+class HddtProvider(Protocol):
+    ten: str
+    def phat_hanh(self, hoa_don) -> dict: ...
 
 
-@app.get("/")
-def goc():
-    if os.path.exists(_HTML):
-        return FileResponse(_HTML, media_type="text/html; charset=utf-8")
-    return {"he_thong": "SVWS", "trang_thai": "ok"}
+class FakeProvider:
+    """Provider giả lập cho dev. Trả mã tra cứu như nhà cung cấp thật."""
+    ten = "DEMO"
+
+    def phat_hanh(self, hoa_don) -> dict:
+        return {
+            "provider": self.ten,
+            "ma_tra_cuu": f"{self.ten}-{hoa_don.id:08d}",
+            "trang_thai": "DA_PHAT_HANH",
+        }
 
 
-@app.get("/health")
-def health():
-    return {"he_thong": "SVWS",
-            "modules": ["kho", "ncc", "du_an", "ban_hang", "ke_toan",
-                        "tai_chinh", "nhan_su", "cho_thue", "crm"],
-            "trang_thai": "ok"}
+_PROVIDERS = {"DEMO": FakeProvider()}
+# Khi tích hợp thật:  _PROVIDERS["MISA"] = MisaProvider(api_key=...)
+
+
+def lay_provider(ten: str | None = None) -> HddtProvider:
+    return _PROVIDERS.get((ten or "DEMO").upper(), _PROVIDERS["DEMO"])

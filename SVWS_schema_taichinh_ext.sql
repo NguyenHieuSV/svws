@@ -1,51 +1,36 @@
--- ============ NHÂN SỰ & LƯƠNG — mở rộng hồ sơ lương + kỳ lương + OT + BH DN ============
--- Hồ sơ lương trên nhân viên
-ALTER TABLE nhan_vien ADD COLUMN IF NOT EXISTS luong_dong_bh        NUMERIC(18,0) NOT NULL DEFAULT 0; -- lương đóng BH (0 = dùng lương cơ bản)
-ALTER TABLE nhan_vien ADD COLUMN IF NOT EXISTS so_phu_thuoc         INT           NOT NULL DEFAULT 0;
-ALTER TABLE nhan_vien ADD COLUMN IF NOT EXISTS phu_cap_an           NUMERIC(18,0) NOT NULL DEFAULT 0;
-ALTER TABLE nhan_vien ADD COLUMN IF NOT EXISTS phu_cap_di_lai       NUMERIC(18,0) NOT NULL DEFAULT 0;
-ALTER TABLE nhan_vien ADD COLUMN IF NOT EXISTS phu_cap_dien_thoai   NUMERIC(18,0) NOT NULL DEFAULT 0;
-ALTER TABLE nhan_vien ADD COLUMN IF NOT EXISTS phu_cap_trach_nhiem  NUMERIC(18,0) NOT NULL DEFAULT 0;
-ALTER TABLE nhan_vien ADD COLUMN IF NOT EXISTS ma_so_thue           VARCHAR(20);
-ALTER TABLE nhan_vien ADD COLUMN IF NOT EXISTS so_tai_khoan         VARCHAR(30);
-ALTER TABLE nhan_vien ADD COLUMN IF NOT EXISTS ngan_hang            VARCHAR(80);
-ALTER TABLE nhan_vien ADD COLUMN IF NOT EXISTS email                VARCHAR(120);
-ALTER TABLE nhan_vien ADD COLUMN IF NOT EXISTS tk_chi_phi           VARCHAR(10)   NOT NULL DEFAULT '642';
-
--- Bảng lương (1 dòng / nhân viên / tháng) — bổ sung công, OT, BH DN, chi phí DN, email
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS cong_chuan        NUMERIC(5,1)  NOT NULL DEFAULT 26;
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS cong_thuc_te      NUMERIC(5,1)  NOT NULL DEFAULT 26;
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS gio_ot_thuong     NUMERIC(6,1)  NOT NULL DEFAULT 0;
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS gio_ot_cuoi_tuan  NUMERIC(6,1)  NOT NULL DEFAULT 0;
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS gio_ot_le         NUMERIC(6,1)  NOT NULL DEFAULT 0;
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS luong_thuc_te     NUMERIC(18,0) NOT NULL DEFAULT 0;
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS tam_ung           NUMERIC(18,0) NOT NULL DEFAULT 0;
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS thu_nhap_chiu_thue NUMERIC(18,0) NOT NULL DEFAULT 0;
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS bhxh_dn           NUMERIC(18,0) NOT NULL DEFAULT 0;
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS bhyt_dn           NUMERIC(18,0) NOT NULL DEFAULT 0;
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS bhtn_dn           NUMERIC(18,0) NOT NULL DEFAULT 0;
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS chi_phi_dn        NUMERIC(18,0) NOT NULL DEFAULT 0;
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS email_sent        BOOLEAN       NOT NULL DEFAULT FALSE;
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS ngay_gui_email    TIMESTAMP;
-
--- Kỳ lương (header theo tháng)
-CREATE TABLE IF NOT EXISTS ky_luong (
-    thang        VARCHAR(7) PRIMARY KEY,          -- 'YYYY-MM'
-    cong_chuan   NUMERIC(5,1)  NOT NULL DEFAULT 26,
-    ngay_chot    DATE,                            -- chậm nhất ngày 7
-    trang_thai   VARCHAR(20)   NOT NULL DEFAULT 'NHAP',   -- NHAP / DA_CHOT
-    da_gui_email BOOLEAN       NOT NULL DEFAULT FALSE,
-    tong_thu_nhap  NUMERIC(18,0) NOT NULL DEFAULT 0,
-    tong_thuc_linh NUMERIC(18,0) NOT NULL DEFAULT 0,
-    tong_chi_phi_dn NUMERIC(18,0) NOT NULL DEFAULT 0,
-    nguoi_chot   BIGINT,
-    cap_nhat     TIMESTAMP DEFAULT now()
+-- ============ TRÍCH LẬP QUỸ (phân biệt được trừ / sau thuế) + cảnh báo trần ============
+CREATE TABLE IF NOT EXISTS quy_trich_lap (
+    ma        VARCHAR(20) PRIMARY KEY,
+    ten       VARCHAR(160) NOT NULL,
+    ban_chat  VARCHAR(12) NOT NULL DEFAULT 'TRUOC_THUE',  -- TRUOC_THUE (được trừ) / SAU_THUE (không được trừ)
+    tk_no     VARCHAR(10) NOT NULL,
+    tk_co     VARCHAR(10) NOT NULL,
+    gioi_han  VARCHAR(20) NOT NULL DEFAULT 'NONE',          -- NONE / KHCN_20 / PHUC_LOI_1THANG
+    so_du     NUMERIC(18,0) NOT NULL DEFAULT 0,
+    hoat_dong BOOLEAN NOT NULL DEFAULT TRUE
 );
+CREATE TABLE IF NOT EXISTS giao_dich_quy (
+    id         BIGSERIAL PRIMARY KEY,
+    ma_quy     VARCHAR(20) NOT NULL REFERENCES quy_trich_lap(ma),
+    loai       VARCHAR(12) NOT NULL,                         -- TRICH_LAP / SU_DUNG
+    ky         VARCHAR(7)  NOT NULL,                         -- 'YYYY' hoặc 'YYYY-MM'
+    ngay       DATE NOT NULL DEFAULT CURRENT_DATE,
+    so_tien    NUMERIC(18,0) NOT NULL,
+    dien_giai  TEXT,
+    but_toan_id BIGINT,
+    nguoi_tao  BIGINT,
+    ngay_tao   TIMESTAMP DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_gdquy_ky ON giao_dich_quy(ma_quy, ky);
 
--- ===== Phụ cấp phát sinh trong kỳ + khấu trừ nghỉ không phép / đi trễ / khác =====
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS phu_cap_khac    NUMERIC(18,0) NOT NULL DEFAULT 0; -- thưởng/phụ cấp phát sinh trong kỳ
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS ngay_nghi_kpep  NUMERIC(4,1)  NOT NULL DEFAULT 0; -- số ngày nghỉ không phép
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS so_phut_di_tre  INT           NOT NULL DEFAULT 0; -- tổng số phút đi trễ
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS khau_tru_nghi   NUMERIC(18,0) NOT NULL DEFAULT 0; -- tiền trừ nghỉ KP (tính)
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS khau_tru_tre    NUMERIC(18,0) NOT NULL DEFAULT 0; -- tiền trừ đi trễ (tính)
-ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS khau_tru_khac   NUMERIC(18,0) NOT NULL DEFAULT 0; -- khấu trừ khác (sau thuế)
+INSERT INTO quy_trich_lap (ma, ten, ban_chat, tk_no, tk_co, gioi_han) VALUES
+ ('DP_PTKD','Dự phòng nợ phải thu khó đòi','TRUOC_THUE','642','2293','NONE'),
+ ('DP_HTK','Dự phòng giảm giá hàng tồn kho','TRUOC_THUE','632','2294','NONE'),
+ ('DP_DAUTU','Dự phòng giảm giá đầu tư tài chính','TRUOC_THUE','635','2291','NONE'),
+ ('DP_BAOHANH','Dự phòng bảo hành sản phẩm/công trình','TRUOC_THUE','641','352','NONE'),
+ ('KHCN','Quỹ phát triển khoa học & công nghệ','TRUOC_THUE','642','356','KHCN_20'),
+ ('KHEN_THUONG','Quỹ khen thưởng','SAU_THUE','421','3531','NONE'),
+ ('PHUC_LOI','Quỹ phúc lợi','SAU_THUE','421','3532','PHUC_LOI_1THANG'),
+ ('DAUTU_PT','Quỹ đầu tư phát triển','SAU_THUE','421','414','NONE'),
+ ('DP_TAICHINH','Quỹ dự phòng tài chính','SAU_THUE','421','418','NONE')
+ON CONFLICT (ma) DO NOTHING;

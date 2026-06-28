@@ -1,179 +1,138 @@
 """
-Module CRM — lát cắt dọc thứ tám (khép bộ). Minh họa:
-  • Hồ sơ KH 360°: tổng hợp LIÊN MODULE (báo giá, đơn hàng, công nợ).
-  • Phân loại ABC TỰ ĐỘNG theo doanh số.
-  • Chăm sóc sau bán: lên lịch +7/+30 ngày, nhắc đến hạn, ghi CSAT.
-  • Khiếu nại với SLA 24h.
+Module DỊCH VỤ CHO THUÊ — lát cắt dọc thứ bảy. TÁI DÙNG hạ tầng sẵn có:
+  • xuất/nhập tài sản qua kho_service (như Bán hàng).
+  • lập hóa đơn THUÊ + công nợ -> module Kế toán phát hành HĐĐT & thu tiền.
+Đặc thù: hợp đồng định kỳ, thu phí theo kỳ, nhắc hết hạn.
 """
 from decimal import Decimal
 from datetime import date, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 from ..database import get_db
 from ..rbac import yeu_cau
-from ..deps import nhan_vien_id_cua
 from ..audit import ghi_audit
-from ..models import (NguoiDung, KhachHang, BaoGia, DonHang, CongNo, ChamSocKH)
-from ..schemas import ChamSocVao, ChamSocRa, HoanThanhVao
+from ..kho_service import xuat_ton, nhap_ton
+from ..models import (NguoiDung, KhachHang, HopDongThue, TaiSanThue, HoaDon, CongNo)
+from ..schemas import HopDongThueVao, HopDongThueRa
 
-router = APIRouter(prefix="/crm", tags=["crm"])
-MODULE = "crm"
-# Ngưỡng phân loại ABC theo doanh số luỹ kế (VND) — tham số, chỉnh tại đây
-NGUONG_A = Decimal("500000000")
-NGUONG_B = Decimal("100000000")
-
-
-def xep_loai_abc(doanh_so: Decimal) -> str:
-    if doanh_so >= NGUONG_A:
-        return "A"
-    if doanh_so >= NGUONG_B:
-        return "B"
-    return "C"
+router = APIRouter(prefix="/cho-thue", tags=["cho_thue"])
+MODULE = "cho_thue"
+THUE_SUAT = Decimal("0.10")  # cho thuê thiết bị thường 10% — nên cấu hình theo đối tượng
+TU_KHO = {"HOA_CHAT", "VAT_TU", "THIET_BI"}
 
 
-def _doanh_so_kh(db: Session, kh_id: int) -> Decimal:
-    """Doanh số = tổng công nợ phải thu đã phát sinh (gồm bán hàng + cho thuê)."""
-    return db.query(func.coalesce(func.sum(CongNo.so_tien), 0)) \
-             .filter(CongNo.khach_hang_id == kh_id, CongNo.loai == "PHAI_THU").scalar() or Decimal(0)
+@router.get("/hop-dong", response_model=list[HopDongThueRa])
+def ds_hop_dong(db: Session = Depends(get_db), _=Depends(yeu_cau(MODULE, "XEM"))):
+    return db.query(HopDongThue).order_by(HopDongThue.id.desc()).all()
 
 
-# ----- Hồ sơ KH 360° (tổng hợp liên module) -----
-@router.get("/khach-hang/{kh_id}")
-def ho_so_360(kh_id: int, db: Session = Depends(get_db), _=Depends(yeu_cau(MODULE, "XEM"))):
-    kh = db.get(KhachHang, kh_id)
-    if kh is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy khách hàng")
-    so_bao_gia = db.query(func.count(BaoGia.id)).filter_by(khach_hang_id=kh_id).scalar()
-    so_don_hang = db.query(func.count(DonHang.id)).filter_by(khach_hang_id=kh_id).scalar()
-    doanh_so = _doanh_so_kh(db, kh_id)
-    con_phai_thu = db.query(func.coalesce(func.sum(CongNo.so_tien - CongNo.da_thanh_toan), 0)) \
-        .filter(CongNo.khach_hang_id == kh_id, CongNo.loai == "PHAI_THU",
-                CongNo.trang_thai != "THU_DU").scalar()
-    lich_su = db.query(ChamSocKH).filter_by(khach_hang_id=kh_id) \
-        .order_by(ChamSocKH.id.desc()).limit(5).all()
-    return {
-        "khach_hang": {"id": kh.id, "ten": kh.ten, "phan_loai_abc": kh.phan_loai_abc},
-        "so_bao_gia": so_bao_gia, "so_don_hang": so_don_hang,
-        "doanh_so_luy_ke": float(doanh_so), "con_phai_thu": float(con_phai_thu),
-        "cham_soc_gan_day": [{"loai": c.loai, "ngay_hen": str(c.ngay_hen),
-                              "trang_thai": c.trang_thai, "csat": float(c.csat) if c.csat else None}
-                             for c in lich_su],
-    }
-
-
-# ----- Phân loại ABC tự động cho toàn bộ KH -----
-@router.post("/phan-loai-abc")
-def phan_loai_abc(db: Session = Depends(get_db),
-                  nd: NguoiDung = Depends(yeu_cau(MODULE, "THAO_TAC"))):
-    kqs = {"A": 0, "B": 0, "C": 0}
-    for kh in db.query(KhachHang).all():
-        loai = xep_loai_abc(_doanh_so_kh(db, kh.id))
-        kh.phan_loai_abc = loai
-        kqs[loai] += 1
-    ghi_audit(db, nd.id, "SUA", "khach_hang", None, moi={"phan_loai_abc": kqs})
-    db.commit()
-    return {"da_phan_loai": sum(kqs.values()), "theo_nhom": kqs}
-
-
-# ----- Lên lịch chăm sóc sau bán (+7 / +30 ngày) từ một đơn hàng -----
-@router.post("/len-lich-sau-ban/{don_hang_id}")
-def len_lich_sau_ban(don_hang_id: int, db: Session = Depends(get_db),
-                     nd: NguoiDung = Depends(yeu_cau(MODULE, "THAO_TAC"))):
-    dh = db.get(DonHang, don_hang_id)
-    if dh is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy đơn hàng")
-    kh = db.get(KhachHang, dh.khach_hang_id)
-    tasks = []
-    for so_ngay in (7, 30):
-        t = ChamSocKH(khach_hang_id=dh.khach_hang_id, loai="GOI",
-                      noi_dung=f"Chăm sóc sau bán đơn {dh.so} (+{so_ngay} ngày)",
-                      ngay_hen=dh.ngay + timedelta(days=so_ngay), trang_thai="CHO",
-                      nguoi_phu_trach=kh.nguoi_phu_trach if kh else None)
-        db.add(t); tasks.append(t)
-    db.flush()
-    ghi_audit(db, nd.id, "TAO", "cham_soc_kh", None,
-              moi={"don_hang": don_hang_id, "so_task": len(tasks)})
-    db.commit()
-    return {"don_hang_id": don_hang_id, "so_lich_tao": len(tasks),
-            "ngay_hen": [str(t.ngay_hen) for t in tasks]}
-
-
-# ----- Tạo việc chăm sóc / khiếu nại thủ công -----
-@router.post("/cham-soc", response_model=ChamSocRa, status_code=201)
-def tao_cham_soc(data: ChamSocVao, db: Session = Depends(get_db),
+# ----- Ký HĐ + xuất tài sản (HC/VT/TB trừ kho; NHAN_SU điều phối người) -----
+@router.post("/hop-dong", response_model=HopDongThueRa, status_code=201)
+def tao_hop_dong(data: HopDongThueVao, db: Session = Depends(get_db),
                  nd: NguoiDung = Depends(yeu_cau(MODULE, "THAO_TAC"))):
     if db.get(KhachHang, data.khach_hang_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy khách hàng")
-    cs = ChamSocKH(khach_hang_id=data.khach_hang_id, loai=data.loai, noi_dung=data.noi_dung,
-                   ngay_hen=data.ngay_hen or date.today(), trang_thai="CHO",
-                   nguoi_phu_trach=nhan_vien_id_cua(db, nd.id))
-    db.add(cs); db.flush()
-    ghi_audit(db, nd.id, "TAO", "cham_soc_kh", cs.id, moi={"loai": data.loai})
-    db.commit(); db.refresh(cs)
-    return cs
+    hd = HopDongThue(so=data.so, khach_hang_id=data.khach_hang_id, doi_tuong=data.doi_tuong,
+                     gia_thue=data.gia_thue, chu_ky=data.chu_ky,
+                     ngay_bat_dau=data.ngay_bat_dau, ngay_ket_thuc=data.ngay_ket_thuc,
+                     trang_thai="HIEU_LUC")
+    db.add(hd); db.flush()
+    if not hd.so:
+        hd.so = f"HDT-{date.today():%Y%m%d}-{hd.id}"
+    canh_bao_ton = []
+    for ts in data.tai_san:
+        db.add(TaiSanThue(hop_dong_thue_id=hd.id, hang_hoa_id=ts.hang_hoa_id,
+                          nhan_vien_id=ts.nhan_vien_id, so_luong=ts.so_luong))
+        if data.doi_tuong in TU_KHO:
+            if ts.hang_hoa_id is None:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "Tài sản kho cần hang_hoa_id")
+            if xuat_ton(db, ts.hang_hoa_id, ts.so_luong):
+                canh_bao_ton.append(ts.hang_hoa_id)
+    ghi_audit(db, nd.id, "TAO", "hop_dong_thue", hd.id,
+              moi={"doi_tuong": data.doi_tuong, "gia_thue": float(data.gia_thue)})
+    db.commit(); db.refresh(hd)
+    return hd
 
 
-# ----- Hoàn thành việc chăm sóc + ghi CSAT -----
-@router.post("/cham-soc/{cs_id}/hoan-thanh", response_model=ChamSocRa)
-def hoan_thanh(cs_id: int, data: HoanThanhVao, db: Session = Depends(get_db),
+# ----- Thu phí một kỳ: lập hóa đơn THUÊ + công nợ (bàn giao Kế toán) -----
+@router.post("/hop-dong/{hd_id}/thu-phi")
+def thu_phi_ky(hd_id: int, db: Session = Depends(get_db),
                nd: NguoiDung = Depends(yeu_cau(MODULE, "THAO_TAC"))):
-    cs = db.get(ChamSocKH, cs_id)
-    if cs is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy việc chăm sóc")
-    cs.trang_thai = "HOAN_THANH"
-    cs.ngay_thuc_hien = date.today()
-    if data.csat is not None:
-        cs.csat = data.csat
-    if data.noi_dung:
-        cs.noi_dung = data.noi_dung
-    ghi_audit(db, nd.id, "SUA", "cham_soc_kh", cs.id,
-              moi={"trang_thai": "HOAN_THANH", "csat": float(data.csat) if data.csat else None})
-    db.commit(); db.refresh(cs)
-    return cs
+    hd = db.get(HopDongThue, hd_id)
+    if hd is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy hợp đồng")
+    if hd.trang_thai != "HIEU_LUC":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Hợp đồng không còn hiệu lực")
+    truoc_thue = hd.gia_thue
+    thue = (truoc_thue * THUE_SUAT).quantize(Decimal("1"))
+    hoa_don = HoaDon(loai="THUE", hop_dong_thue_id=hd.id, ngay=date.today(),
+                     tien_truoc_thue=truoc_thue, tien_thue=thue, tong_tien=truoc_thue + thue,
+                     hddt_trang_thai="CHUA_PHAT_HANH")
+    db.add(hoa_don); db.flush()
+    han = date.today() + timedelta(days=15)
+    db.add(CongNo(loai="PHAI_THU", hoa_don_id=hoa_don.id, khach_hang_id=hd.khach_hang_id,
+                  so_tien=hoa_don.tong_tien, han=han, trang_thai="CHUA_THU"))
+    ghi_audit(db, nd.id, "TAO", "hoa_don", hoa_don.id,
+              moi={"loai": "THUE", "hop_dong": hd.id, "tong_tien": float(hoa_don.tong_tien)})
+    db.commit()
+    return {"hop_dong_id": hd.id, "hoa_don_id": hoa_don.id,
+            "tong_tien": float(hoa_don.tong_tien), "han_thu": str(han),
+            "ghi_chu": "Hóa đơn THUÊ chờ phát hành HĐĐT ở module Kế toán."}
 
 
-# ----- Nhắc việc chăm sóc đến hạn -----
-@router.get("/cham-soc/den-han", response_model=list[ChamSocRa])
-def den_han(db: Session = Depends(get_db), _=Depends(yeu_cau(MODULE, "XEM"))):
-    return db.query(ChamSocKH).filter(
-        ChamSocKH.trang_thai == "CHO", ChamSocKH.ngay_hen <= date.today()
-    ).order_by(ChamSocKH.ngay_hen).all()
+# ----- Chạy thu phí định kỳ cho mọi HĐ còn hiệu lực -----
+@router.post("/chay-thu-phi-dinh-ky")
+def chay_thu_phi(db: Session = Depends(get_db),
+                 nd: NguoiDung = Depends(yeu_cau(MODULE, "THAO_TAC"))):
+    hds = db.query(HopDongThue).filter_by(trang_thai="HIEU_LUC").all()
+    ket_qua = []
+    for hd in hds:
+        truoc = hd.gia_thue
+        thue = (truoc * THUE_SUAT).quantize(Decimal("1"))
+        hoa_don = HoaDon(loai="THUE", hop_dong_thue_id=hd.id, ngay=date.today(),
+                         tien_truoc_thue=truoc, tien_thue=thue, tong_tien=truoc + thue,
+                         hddt_trang_thai="CHUA_PHAT_HANH")
+        db.add(hoa_don); db.flush()
+        db.add(CongNo(loai="PHAI_THU", hoa_don_id=hoa_don.id, khach_hang_id=hd.khach_hang_id,
+                      so_tien=hoa_don.tong_tien, han=date.today() + timedelta(days=15),
+                      trang_thai="CHUA_THU"))
+        ket_qua.append({"hop_dong_id": hd.id, "hoa_don_id": hoa_don.id,
+                        "tong_tien": float(hoa_don.tong_tien)})
+    db.commit()
+    return {"so_hop_dong_thu_phi": len(ket_qua), "chi_tiet": ket_qua}
 
 
-# ----- Khiếu nại quá hạn SLA 24h (chưa xử lý sau 1 ngày) -----
-@router.get("/khieu-nai/qua-han")
-def khieu_nai_qua_han(db: Session = Depends(get_db), _=Depends(yeu_cau(MODULE, "XEM"))):
-    moc = date.today() - timedelta(days=1)
-    rows = db.query(ChamSocKH).filter(
-        ChamSocKH.loai == "KHIEU_NAI", ChamSocKH.trang_thai == "CHO",
-        func.date(ChamSocKH.created_at) <= moc,
+# ----- Nhận trả tài sản: nhập lại kho + kết thúc HĐ -----
+@router.post("/hop-dong/{hd_id}/nhan-tra")
+def nhan_tra(hd_id: int, db: Session = Depends(get_db),
+             nd: NguoiDung = Depends(yeu_cau(MODULE, "THAO_TAC"))):
+    hd = db.get(HopDongThue, hd_id)
+    if hd is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy hợp đồng")
+    tra = 0
+    for ts in hd.tai_san:
+        if ts.ngay_tra is None and ts.hang_hoa_id is not None:
+            nhap_ton(db, ts.hang_hoa_id, ts.so_luong)  # nhập lại kho
+            ts.ngay_tra = date.today()
+            tra += 1
+    hd.trang_thai = "KET_THUC"
+    ghi_audit(db, nd.id, "SUA", "hop_dong_thue", hd.id, moi={"trang_thai": "KET_THUC", "tai_san_tra": tra})
+    db.commit()
+    return {"hop_dong_id": hd.id, "tai_san_nhap_lai": tra, "trang_thai": "KET_THUC"}
+
+
+# ----- Nhắc hợp đồng sắp hết hạn (≤ 30 ngày) -----
+@router.get("/sap-het-han")
+def sap_het_han(db: Session = Depends(get_db), _=Depends(yeu_cau(MODULE, "XEM"))):
+    hom_nay = date.today()
+    moc = hom_nay + timedelta(days=30)
+    hds = db.query(HopDongThue).filter(
+        HopDongThue.trang_thai == "HIEU_LUC",
+        HopDongThue.ngay_ket_thuc >= hom_nay,
+        HopDongThue.ngay_ket_thuc <= moc,
     ).all()
-    return {"so_khieu_nai_qua_han_24h": len(rows),
-            "danh_sach": [{"id": r.id, "khach_hang_id": r.khach_hang_id,
-                           "noi_dung": r.noi_dung} for r in rows]}
-
-
-# ----- Tổng quan CRM (KPI một lần gọi) -----
-@router.get("/tong-quan")
-def tong_quan(db: Session = Depends(get_db), _=Depends(yeu_cau(MODULE, "XEM"))):
-    abc = {"A": 0, "B": 0, "C": 0}
-    chua_xep = 0
-    for kh in db.query(KhachHang).all():
-        if kh.phan_loai_abc in abc:
-            abc[kh.phan_loai_abc] += 1
-        else:
-            chua_xep += 1
-    den_han = db.query(func.count(ChamSocKH.id)).filter(
-        ChamSocKH.trang_thai == "CHO", ChamSocKH.ngay_hen <= date.today()).scalar()
-    moc = date.today() - timedelta(days=1)
-    kn = db.query(func.count(ChamSocKH.id)).filter(
-        ChamSocKH.loai == "KHIEU_NAI", ChamSocKH.trang_thai == "CHO",
-        func.date(ChamSocKH.created_at) <= moc).scalar()
-    csat = db.query(func.avg(ChamSocKH.csat)).filter(ChamSocKH.csat.isnot(None)).scalar()
-    return {
-        "so_kh": sum(abc.values()) + chua_xep,
-        "abc": abc, "chua_xep": chua_xep,
-        "den_han": den_han or 0, "khieu_nai_qua_han": kn or 0,
-        "csat_tb": round(float(csat), 2) if csat else None,
-    }
+    ds = [{"hop_dong_id": h.id, "so": h.so, "khach_hang_id": h.khach_hang_id,
+           "ngay_ket_thuc": str(h.ngay_ket_thuc),
+           "con_ngay": (h.ngay_ket_thuc - hom_nay).days,
+           "canh_bao": "Nhắc CEO + P.Kinh doanh — đề xuất gia hạn"} for h in hds]
+    return {"hom_nay": str(hom_nay), "so_hop_dong_sap_het_han": len(ds), "danh_sach": ds}

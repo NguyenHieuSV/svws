@@ -1,24 +1,34 @@
--- ============ THAM SỐ LƯƠNG THEO LUẬT (cập nhật khi luật thay đổi) ============
-CREATE TABLE IF NOT EXISTS tham_so_luong (
-    id INT PRIMARY KEY DEFAULT 1,
-    tl_bhxh_nv NUMERIC(6,4) NOT NULL DEFAULT 0.08,
-    tl_bhyt_nv NUMERIC(6,4) NOT NULL DEFAULT 0.015,
-    tl_bhtn_nv NUMERIC(6,4) NOT NULL DEFAULT 0.01,
-    tl_bhxh_dn NUMERIC(6,4) NOT NULL DEFAULT 0.175,
-    tl_bhyt_dn NUMERIC(6,4) NOT NULL DEFAULT 0.03,
-    tl_bhtn_dn NUMERIC(6,4) NOT NULL DEFAULT 0.01,
-    tran_bhxh_bhyt NUMERIC(18,0) NOT NULL DEFAULT 46800000,   -- 20× lương cơ sở
-    tran_bhtn      NUMERIC(18,0) NOT NULL DEFAULT 99200000,   -- 20× LTT vùng I
-    giam_tru_ban_than  NUMERIC(18,0) NOT NULL DEFAULT 11000000,
-    giam_tru_phu_thuoc NUMERIC(18,0) NOT NULL DEFAULT 4400000,
-    mien_thue_an   NUMERIC(18,0) NOT NULL DEFAULT 730000,
-    hs_ot_thuong   NUMERIC(4,2) NOT NULL DEFAULT 1.5,
-    hs_ot_cuoi_tuan NUMERIC(4,2) NOT NULL DEFAULT 2.0,
-    hs_ot_le       NUMERIC(4,2) NOT NULL DEFAULT 3.0,
-    luong_co_so    NUMERIC(18,0) NOT NULL DEFAULT 2340000,
-    luong_toi_thieu_vung NUMERIC(18,0) NOT NULL DEFAULT 4960000,
-    bac_thue TEXT NOT NULL DEFAULT '[[5000000,0.05],[10000000,0.10],[18000000,0.15],[32000000,0.20],[52000000,0.25],[80000000,0.30],[null,0.35]]',
-    cap_nhat TIMESTAMP DEFAULT now(),
-    CONSTRAINT ts_luong_mot_dong CHECK (id = 1)
+-- ============ QUẢN LÝ TIỀN VAY (khế ước vay + lịch trả nợ) ============
+CREATE TABLE IF NOT EXISTS khoan_vay (
+    id            BIGSERIAL PRIMARY KEY,
+    so            VARCHAR(40) UNIQUE,
+    ben_cho_vay   VARCHAR(160) NOT NULL,
+    loai          VARCHAR(12)  NOT NULL DEFAULT 'NGAN_HAN',  -- NGAN_HAN / DAI_HAN
+    so_tien_goc   NUMERIC(18,0) NOT NULL,
+    lai_suat_nam  NUMERIC(6,3)  NOT NULL DEFAULT 0,           -- %/năm
+    phuong_thuc   VARCHAR(16)  NOT NULL DEFAULT 'GOC_DEU',    -- GOC_DEU / TRA_DEU / GOC_CUOI
+    ngay_nhan     DATE NOT NULL,
+    so_ky         INT  NOT NULL DEFAULT 12,
+    chu_ky_thang  INT  NOT NULL DEFAULT 1,                    -- số tháng mỗi kỳ
+    ngay_dao_han  DATE,
+    tk_tien       VARCHAR(10) NOT NULL DEFAULT '112',         -- 111/112 nhận & trả
+    con_lai_goc   NUMERIC(18,0) NOT NULL DEFAULT 0,
+    trang_thai    VARCHAR(16) NOT NULL DEFAULT 'DANG_VAY',    -- DANG_VAY / DA_TAT_TOAN
+    ghi_chu       TEXT,
+    cap_nhat      TIMESTAMP DEFAULT now()
 );
-INSERT INTO tham_so_luong (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+CREATE TABLE IF NOT EXISTS lich_tra_no (
+    id            BIGSERIAL PRIMARY KEY,
+    khoan_vay_id  BIGINT NOT NULL REFERENCES khoan_vay(id) ON DELETE CASCADE,
+    ky            INT NOT NULL,
+    ngay_den_han  DATE NOT NULL,
+    du_no_dau     NUMERIC(18,0) NOT NULL DEFAULT 0,
+    goc_phai_tra  NUMERIC(18,0) NOT NULL DEFAULT 0,
+    lai_phai_tra  NUMERIC(18,0) NOT NULL DEFAULT 0,
+    tong_phai_tra NUMERIC(18,0) NOT NULL DEFAULT 0,
+    du_no_cuoi    NUMERIC(18,0) NOT NULL DEFAULT 0,
+    da_tra        BOOLEAN NOT NULL DEFAULT FALSE,
+    ngay_tra      DATE,
+    UNIQUE(khoan_vay_id, ky)
+);
+CREATE INDEX IF NOT EXISTS idx_lichtrano_denhan ON lich_tra_no(ngay_den_han, da_tra);

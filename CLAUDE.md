@@ -1,3 +1,6 @@
-DATABASE_URL=postgresql+psycopg2://svws:svws@localhost:5432/svws
-JWT_SECRET=doi-secret-nay-trong-production
-JWT_EXPIRE_MINUTES=480
+__pycache__/
+*.pyc
+.venv/
+.env
+.pytest_cache/
+*.egg-info/

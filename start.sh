@@ -1,11 +1,3 @@
-fastapi>=0.110
-uvicorn[standard]>=0.29
-sqlalchemy>=2.0
-psycopg2-binary>=2.9
-pydantic>=2.6
-pydantic-settings>=2.2
-pyjwt>=2.8
-bcrypt>=4.1
-python-multipart>=0.0.9
-reportlab>=4.0
-openpyxl>=3.1
+-r requirements.txt
+pytest>=8.0
+httpx>=0.27

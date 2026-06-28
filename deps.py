@@ -1,202 +1,440 @@
-"""Sinh chứng từ Đơn đặt hàng (PO) dạng PDF theo mẫu SVWS (2 trang).
-
-Trang 1: Đơn đặt hàng. Trang 2: Phiếu xác nhận của nhà cung cấp.
-Dùng reportlab + font DejaVu (hỗ trợ tiếng Việt). Không phụ thuộc dịch vụ ngoài.
 """
-from __future__ import annotations
-import os
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.lib.colors import HexColor, white, black
-from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
-                                TableStyle, Image, PageBreak)
+CỔNG AI — phân loại thư phản hồi + gợi ý trả lời.
+Dev: FakeAIProvider (luật từ khóa tiếng Việt, chạy offline).
+Prod: AnthropicAIProvider (gọi Claude API, trả JSON). Đổi AI_PROVIDER=ANTHROPIC + ANTHROPIC_API_KEY.
 
-NAVY = HexColor("#1F4E79")
-LIGHT = HexColor("#EAF0F7")
-GREY = HexColor("#666666")
-LINE = HexColor("#BBBBBB")
-_FONTS_OK = False
-_DEFAULT_SIGN = os.path.join(os.path.dirname(__file__), "assets", "e_sign.png")
+Kết quả: dict {y_dinh, khan, tom_tat, tra_loi}
+  y_dinh ∈ QUAN_TAM/HOI_KY_THUAT/HEN_GAP/TU_CHOI/KHIEU_NAI/HUY_NHAN/VANG_MAT/SPAM/KHAC
+  khan   ∈ CAO/TRUNG/THAP
+"""
+import json
+from typing import Protocol
+from .config import settings
+
+Y_DINH = {"QUAN_TAM", "HOI_KY_THUAT", "HEN_GAP", "TU_CHOI",
+          "KHIEU_NAI", "HUY_NHAN", "VANG_MAT", "SPAM", "KHAC"}
+
+_TRA_LOI = {
+    "QUAN_TAM": "Cảm ơn Quý công ty đã quan tâm. SVWS sẽ gửi báo giá chi tiết kèm phương án kỹ thuật phù hợp trong thời gian sớm nhất. Vui lòng cho biết công suất và yêu cầu cụ thể để chúng tôi tư vấn chính xác.",
+    "HOI_KY_THUAT": "Cảm ơn câu hỏi của Quý công ty. Bộ phận kỹ thuật SVWS sẽ giải đáp chi tiết và có thể sắp lịch khảo sát nếu cần. Quý công ty vui lòng cung cấp thêm thông tin hiện trạng hệ thống.",
+    "HEN_GAP": "SVWS rất sẵn lòng sắp xếp buổi khảo sát/gặp trao đổi. Vui lòng cho biết thời gian và địa điểm thuận tiện để chúng tôi chủ động bố trí nhân sự.",
+    "TU_CHOI": "Cảm ơn Quý công ty đã phản hồi. SVWS rất mong có cơ hội hợp tác trong tương lai và luôn sẵn sàng hỗ trợ khi Quý công ty có nhu cầu.",
+    "KHIEU_NAI": "SVWS rất tiếc về sự bất tiện này. Chúng tôi tiếp nhận phản ánh và sẽ cử bộ phận phụ trách kiểm tra, xử lý ưu tiên. Mong Quý công ty thông cảm và cho phép chúng tôi liên hệ ngay để khắc phục.",
+    "KHAC": "Cảm ơn Quý công ty đã phản hồi. SVWS đã tiếp nhận và sẽ liên hệ lại trong thời gian sớm nhất.",
+}
+
+def _khan_cho(y_dinh: str, text: str) -> str:
+    t = text.lower()
+    if y_dinh == "KHIEU_NAI" or any(k in t for k in ["gấp", "khẩn", "ngay", "sớm nhất", "urgent"]):
+        return "CAO"
+    if y_dinh in ("QUAN_TAM", "HEN_GAP", "HOI_KY_THUAT"):
+        return "TRUNG"
+    return "THAP"
 
 
-def _dang_ky_font(regular, bold):
-    global _FONTS_OK
-    if _FONTS_OK:
-        return ("SV", "SVb")
-    reg = regular if os.path.exists(regular) else None
-    bd = bold if os.path.exists(bold) else None
-    if reg:
-        pdfmetrics.registerFont(TTFont("SV", reg))
-    if bd:
-        pdfmetrics.registerFont(TTFont("SVb", bd))
-    _FONTS_OK = True
-    return ("SV" if reg else "Helvetica", "SVb" if bd else "Helvetica-Bold")
+class AIProvider(Protocol):
+    ten: str
+    def phan_loai(self, tieu_de: str, noi_dung: str) -> dict: ...
 
 
-def _tien(x):
+class FakeAIProvider:
+    ten = "DEMO"
+    def phan_loai(self, tieu_de, noi_dung) -> dict:
+        t = f"{tieu_de or ''} {noi_dung or ''}".lower()
+        def has(*ks): return any(k in t for k in ks)
+        if has("hủy đăng ký", "ngừng nhận", "không nhận email", "unsubscribe", "bỏ nhận tin", "ngưng gửi", "ngung gui"):
+            y = "HUY_NHAN"
+        elif has("vắng mặt", "out of office", "nghỉ phép", "auto-reply", "tự động trả lời", "đang đi công tác", "hồi âm tự động"):
+            y = "VANG_MAT"
+        elif has("khiếu nại", "không hài lòng", "sự cố", "hỏng", "hư hỏng", "lỗi", "kém", "thất vọng", "phàn nàn"):
+            y = "KHIEU_NAI"
+        elif has("khảo sát", "hẹn", "gặp", "lịch", "cuộc họp", "đến xem", "ghé"):
+            y = "HEN_GAP"
+        elif has("báo giá", "quan tâm", "tư vấn", "công suất", "m3", "mét khối", "cần mua", "muốn lắp", "đề nghị", "giá"):
+            y = "QUAN_TAM"
+        elif has("kỹ thuật", "thông số", "công nghệ", "màng", "ro", "mbr", "hỏi về", "tài liệu"):
+            y = "HOI_KY_THUAT"
+        elif has("không có nhu cầu", "từ chối", "không quan tâm", "đã có nhà cung cấp", "cảm ơn nhưng"):
+            y = "TU_CHOI"
+        elif has("trúng thưởng", "khuyến mãi", "vay vốn", "casino", "viagra"):
+            y = "SPAM"
+        else:
+            y = "KHAC"
+        tom_tat = (noi_dung or "").strip().replace("\n", " ")[:140]
+        return {"y_dinh": y, "khan": _khan_cho(y, t),
+                "tom_tat": tom_tat, "tra_loi": _TRA_LOI.get(y, _TRA_LOI["KHAC"])}
+
+
+class AnthropicAIProvider:
+    ten = "ANTHROPIC"
+    def phan_loai(self, tieu_de, noi_dung) -> dict:
+        import urllib.request
+        sys = ("Bạn là trợ lý phân loại email phản hồi khách hàng cho công ty xử lý nước. "
+               "CHỈ trả về JSON, không thêm chữ nào khác, dạng: "
+               '{"y_dinh":"<một trong: QUAN_TAM,HOI_KY_THUAT,HEN_GAP,TU_CHOI,KHIEU_NAI,HUY_NHAN,VANG_MAT,SPAM,KHAC>",'
+               '"khan":"<CAO|TRUNG|THAP>","tom_tat":"<tóm tắt 1 câu tiếng Việt>",'
+               '"tra_loi":"<nội dung email trả lời lịch sự, chuyên nghiệp, tiếng Việt>"}')
+        body = {"model": settings.anthropic_model, "max_tokens": 1024,
+                "system": sys,
+                "messages": [{"role": "user",
+                              "content": f"Tiêu đề: {tieu_de}\nNội dung:\n{noi_dung}"}]}
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"content-type": "application/json",
+                     "x-api-key": settings.anthropic_api_key,
+                     "anthropic-version": "2023-06-01"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            txt = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+            txt = txt.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            out = json.loads(txt)
+            if out.get("y_dinh") not in Y_DINH:
+                out["y_dinh"] = "KHAC"
+            out.setdefault("khan", "TRUNG"); out.setdefault("tom_tat", ""); out.setdefault("tra_loi", "")
+            return out
+        except Exception:
+            return FakeAIProvider().phan_loai(tieu_de, noi_dung)  # an toàn: rớt về luật
+
+
+def lay_ai_provider() -> AIProvider:
+    return AnthropicAIProvider() if settings.ai_provider.upper() == "ANTHROPIC" else FakeAIProvider()
+
+
+# ============ AI SOURCING AGENT — tự tìm/khuyến nghị NCC cho 1 đề xuất ============
+def _ung_vien_nganh(ten: str):
+    t = (ten or "").lower()
+    g = []
+    if any(k in t for k in ["hóa chất", "hoa chat", "pac", "pam", "clo", "polymer", "khử", "naoh", "phèn"]):
+        g.append(("Nhà phân phối hóa chất xử lý nước", "hoa_chat",
+                  "Kiểm chứng: GPKD hóa chất, MSDS/COA, nguồn gốc lô hàng."))
+    if any(k in t for k in ["bơm", "bom", "pump"]):
+        g.append(("Đại lý bơm công nghiệp (Ebara/Grundfos/Pentax/Wilo)", "thiet_bi",
+                  "Kiểm chứng: chính hãng, bảo hành, sẵn hàng, đường cong bơm."))
+    if any(k in t for k in ["màng", "mang", "mbr", "ro", "uf", "nf", "swro"]):
+        g.append(("Nhà cung cấp màng lọc (Toray/DOW/Hydranautics/LG)", "mang",
+                  "Kiểm chứng: chính hãng, model, lead time, điều kiện bảo quản."))
+    if any(k in t for k in ["van", "valve", "ống", "ong", "phụ kiện", "phu kien"]):
+        g.append(("Nhà cung cấp van & vật tư đường ống", "vat_tu",
+                  "Kiểm chứng: tiêu chuẩn vật liệu, áp lực làm việc, chứng chỉ."))
+    if not g:
+        g.append(("Nhà cung cấp vật tư xử lý nước tổng hợp", "khac",
+                  "Kiểm chứng năng lực, hồ sơ pháp lý và báo giá."))
+    return [{"ten": x[0], "loai": x[1], "ghi_chu": x[2]} for x in g]
+
+
+def _ai_source_fake(ten_hang, so_luong, ung_vien):
+    trong = [u for u in ung_vien if u.get("trong_han_muc")]
+    best = (trong or ung_vien)[0] if ung_vien else None
+    rui_ro = []
+    if best and not best.get("trong_han_muc"):
+        rui_ro.append("NCC điểm cao nhất đang vượt/sát hạn mức công nợ — cân nhắc thanh toán bớt trước.")
+    if len(ung_vien) <= 1:
+        rui_ro.append("Chỉ có 1 nguồn cung nội bộ — rủi ro phụ thuộc; nên mời thêm báo giá.")
+    over = [u["ten"] for u in ung_vien if not u.get("trong_han_muc")]
+    if over:
+        rui_ro.append("NCC rẻ nhưng vượt hạn mức công nợ: " + ", ".join(over) + ".")
+    ly_do = ""
+    if best:
+        parts = []
+        if best.get("gia_dung") or best.get("gia_gan_nhat"):
+            _g = best.get("gia_dung") or best.get("gia_gan_nhat")
+            _nhan = "báo giá" if best.get("nguon_gia") == "BAO_GIA" else "giá gần nhất"
+            _hl = f", HL đến {best['hieu_luc_den']}" if best.get("hieu_luc_den") else ""
+            parts.append(f"{_nhan} {int(_g):,}".replace(",", ".") + " đ" + _hl)
+        if best.get("diem_danh_gia"):
+            parts.append(f"đánh giá {best['diem_danh_gia']:.1f}/5")
+        if best.get("ty_le_dung_han") is not None:
+            parts.append(f"giao đúng hạn {round(best['ty_le_dung_han']*100)}%")
+        ly_do = f"Đề xuất chọn {best['ten']} (điểm {best.get('diem_tong')}): " + ", ".join(parts) + "."
+    top = [u["ten"] for u in ung_vien[:3]]
+    hanh_dong = ("Gửi yêu cầu báo giá (RFQ) tới: " + ", ".join(top) + ".") if top \
+        else "Bổ sung hồ sơ NCC cho mặt hàng này rồi xin báo giá."
+    return {"khuyen_nghi_ncc_id": best["nha_cung_cap_id"] if best else None,
+            "ten_khuyen_nghi": best["ten"] if best else None,
+            "ly_do": ly_do, "rui_ro": rui_ro, "hanh_dong": hanh_dong,
+            "ung_vien_moi": _ung_vien_nganh(ten_hang), "nguon": "DEMO"}
+
+
+def _ai_source_anthropic(ten_hang, so_luong, ung_vien):
+    import json as _json, urllib.request
+    sys = ("Bạn là chuyên viên thu mua (sourcing) cho công ty xử lý nước SVWS. "
+           "Dựa trên DANH SÁCH NCC nội bộ đã chấm điểm, hãy khuyến nghị lựa chọn và cảnh báo rủi ro. "
+           "CHỈ chọn khuyen_nghi_ncc_id trong danh sách cung cấp (không bịa). "
+           "ung_vien_moi chỉ là nhóm/thương hiệu gợi ý để tìm thêm báo giá, KHÔNG bịa tên công ty/SĐT cụ thể. "
+           "CHỈ trả JSON: {\"khuyen_nghi_ncc_id\":<id|null>,\"ten_khuyen_nghi\":\"\",\"ly_do\":\"\","
+           "\"rui_ro\":[\"\"],\"hanh_dong\":\"\",\"ung_vien_moi\":[{\"ten\":\"\",\"loai\":\"\",\"ghi_chu\":\"\"}]}")
+    user = (f"Mặt hàng: {ten_hang}\nSố lượng: {so_luong}\n"
+            f"NCC nội bộ (đã chấm điểm):\n{_json.dumps(ung_vien, ensure_ascii=False)}")
+    body = {"model": settings.anthropic_model, "max_tokens": 1024, "system": sys,
+            "messages": [{"role": "user", "content": user}]}
+    req = urllib.request.Request("https://api.anthropic.com/v1/messages",
+                                 data=_json.dumps(body).encode("utf-8"),
+                                 headers={"content-type": "application/json",
+                                          "x-api-key": settings.anthropic_api_key,
+                                          "anthropic-version": "2023-06-01"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        data = _json.loads(r.read().decode("utf-8"))
+    txt = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+    txt = txt.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    out = _json.loads(txt)
+    ids = {u["nha_cung_cap_id"] for u in ung_vien}
+    if out.get("khuyen_nghi_ncc_id") not in ids:
+        out["khuyen_nghi_ncc_id"] = ung_vien[0]["nha_cung_cap_id"] if ung_vien else None
+    out.setdefault("rui_ro", []); out.setdefault("ung_vien_moi", []); out["nguon"] = "ANTHROPIC"
+    return out
+
+
+def goi_y_ncc_ai(ten_hang, so_luong, ung_vien):
+    if settings.ai_provider.upper() == "ANTHROPIC" and settings.anthropic_api_key:
+        try:
+            return _ai_source_anthropic(ten_hang, so_luong, ung_vien)
+        except Exception:
+            pass
+    return _ai_source_fake(ten_hang, so_luong, ung_vien)
+
+
+# ============ DÒ NCC MỚI TRÊN WEB (có kiểm chứng) ============
+def _tim_ncc_web_anthropic(ten_hang, khu_vuc):
+    import json as _json, re as _re, urllib.request
+    sys = ("Bạn là chuyên viên thu mua. Dùng web search tìm nhà cung cấp khả dĩ cho mặt hàng "
+           "tại khu vực yêu cầu. CHỈ liệt kê NCC CÓ THẬT tìm được trên web, kèm nguon_url; KHÔNG bịa. "
+           "Trả về CUỐI CÙNG đúng một JSON: "
+           "{\"ung_vien\":[{\"ten\":\"\",\"website\":\"\",\"khu_vuc\":\"\",\"ghi_chu\":\"\",\"nguon_url\":\"\"}]}. "
+           "Tối đa 6 ứng viên.")
+    body = {"model": settings.anthropic_model, "max_tokens": 1500, "system": sys,
+            "tools": [{"type": settings.web_search_tool, "name": "web_search"}],
+            "messages": [{"role": "user",
+                          "content": f"Mặt hàng: {ten_hang}\nKhu vực: {khu_vuc}\nTìm nhà cung cấp."}]}
+    req = urllib.request.Request("https://api.anthropic.com/v1/messages",
+                                 data=_json.dumps(body).encode("utf-8"),
+                                 headers={"content-type": "application/json",
+                                          "x-api-key": settings.anthropic_api_key,
+                                          "anthropic-version": "2023-06-01"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        data = _json.loads(r.read().decode("utf-8"))
+    txt = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+    m = _re.search(r"\{[\s\S]*\}", txt)
+    obj = _json.loads(m.group(0) if m else txt)
+    uv = obj.get("ung_vien", [])
+    for u in uv:
+        u["kiem_chung"] = False
+    return {"nguon": "ANTHROPIC", "kha_dung": True, "ung_vien": uv}
+
+
+def tim_ncc_web(ten_hang, khu_vuc="Việt Nam"):
+    """Dò NCC mới trên web qua công cụ web_search của Claude. Kết quả CẦN KIỂM CHỨNG trước khi dùng."""
+    if settings.ai_provider.upper() != "ANTHROPIC" or not settings.anthropic_api_key:
+        return {"nguon": "DEMO", "kha_dung": False,
+                "thong_bao": ("Đang ở chế độ DEMO. Bật AI_PROVIDER=ANTHROPIC + ANTHROPIC_API_KEY "
+                              "(tài khoản có web search) để dò NCC mới trên web. Dưới đây là nhóm nguồn nên tìm:"),
+                "ung_vien": [{"ten": u["ten"], "website": "", "khu_vuc": khu_vuc,
+                              "ghi_chu": u["ghi_chu"], "nguon_url": "", "kiem_chung": False}
+                             for u in _ung_vien_nganh(ten_hang)]}
     try:
-        return f"{int(round(float(x))):,}".replace(",", ".")
+        return _tim_ncc_web_anthropic(ten_hang, khu_vuc)
+    except Exception as e:
+        return {"nguon": "ANTHROPIC", "kha_dung": False,
+                "thong_bao": f"Không gọi được web search ({type(e).__name__}). Tạm dùng nhóm nguồn gợi ý:",
+                "ung_vien": [{"ten": u["ten"], "website": "", "khu_vuc": khu_vuc,
+                              "ghi_chu": u["ghi_chu"], "nguon_url": "", "kiem_chung": False}
+                             for u in _ung_vien_nganh(ten_hang)]}
+
+
+# ============ AI CỐ VẤN TÀI CHÍNH (CFO ảo) — phân tích chỉ số + cảnh báo ============
+def _fmt_vnd(x):
+    try:
+        return f"{float(x):,.0f}đ"
     except Exception:
         return str(x)
 
 
-def tao_po_pdf(path, d, cong_ty=None,
-               font_path="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-               font_bold_path="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-               chu_ky_path="", ky_so=True):
-    F, FB = _dang_ky_font(font_path, font_bold_path)
-    cong_ty = cong_ty or {}
-    W = A4[0] - 30 * mm
-    sign = "" if not ky_so else (chu_ky_path or (_DEFAULT_SIGN if os.path.exists(_DEFAULT_SIGN) else ""))
+def _tu_van_tai_chinh_fake(payload: dict) -> dict:
+    cs = payload.get("chi_so", {})
+    cbs = payload.get("canh_bao", [])
+    cao = [c for c in cbs if c.get("muc_do") == "CAO"]
+    trung = [c for c in cbs if c.get("muc_do") == "TRUNG"]
+    if cao:
+        suc_khoe = "YEU"
+    elif len(trung) >= 2:
+        suc_khoe = "TRUNG_BINH"
+    elif trung:
+        suc_khoe = "KHA"
+    else:
+        suc_khoe = "TOT"
+    nhan_dinh = []
+    cr = cs.get("ty_so_thanh_toan_hien_hanh")
+    if cr is not None:
+        nhan_dinh.append(
+            f"Hệ số thanh toán hiện hành {cr:.2f} — "
+            + ("an toàn (>1,5)." if cr >= 1.5 else "ở mức trung bình." if cr >= 1 else "DƯỚI 1, rủi ro thanh khoản."))
+    bg = cs.get("bien_loi_nhuan_gop")
+    if bg is not None:
+        nhan_dinh.append(f"Biên lợi nhuận gộp {bg*100:.1f}% — "
+                         + ("tốt." if bg >= 0.25 else "cần cải thiện." if bg >= 0.1 else "quá mỏng."))
+    dso = cs.get("ky_thu_tien_bq")
+    if dso is not None:
+        nhan_dinh.append(f"Kỳ thu tiền bình quân {dso:.0f} ngày — "
+                         + ("tốt." if dso <= 30 else "hơi dài." if dso <= 60 else "quá dài, vốn bị chiếm dụng."))
+    rw = cs.get("so_thang_tien_mat_con_lai")
+    if rw is not None:
+        nhan_dinh.append(f"Tiền mặt đủ duy trì ~{rw:.1f} tháng theo nhịp chi hiện tại.")
+    uu_tien = []
+    for c in cao + trung:
+        uu_tien.append({"tieu_de": c.get("tieu_de"), "muc_do": c.get("muc_do"),
+                        "hanh_dong": c.get("goi_y", "Rà soát và xử lý.")})
+    if not uu_tien:
+        uu_tien.append({"tieu_de": "Duy trì kỷ luật tài chính", "muc_do": "THAP",
+                        "hanh_dong": "Tiếp tục theo dõi công nợ và dòng tiền hằng tuần."})
+    dg = (f"Sức khỏe tài chính tổng thể: {suc_khoe.replace('_',' ').lower()}. "
+          + ("Có rủi ro cần xử lý ngay. " if cao else "Chưa có rủi ro nghiêm trọng. " if not trung else "Một số điểm cần lưu ý. ")
+          + " ".join(nhan_dinh[:3]))
+    return {"nguon": "DEMO", "suc_khoe": suc_khoe, "danh_gia": dg,
+            "nhan_dinh": nhan_dinh, "uu_tien": uu_tien}
 
-    def _sign_img(wmm, align="CENTER"):
-        if sign and os.path.exists(sign):
-            try:
-                from reportlab.lib.utils import ImageReader
-                iw, ih = ImageReader(sign).getSize()
-                img = Image(sign, width=wmm * mm, height=wmm * mm * ih / iw)
-                img.hAlign = align
-                return img
-            except Exception:
-                return None
-        return None
 
-    def P(s, sz=9, fn=None, col=black, al=TA_LEFT, ld=None):
-        return Paragraph(s, ParagraphStyle("p", fontName=fn or F, fontSize=sz,
-                         textColor=col, alignment=al, leading=ld or (sz + 3)))
+def _tu_van_tai_chinh_anthropic(payload: dict) -> dict:
+    import urllib.request
+    sys = (
+        "Bạn là Giám đốc Tài chính (CFO) giàu kinh nghiệm của một doanh nghiệp kỹ thuật "
+        "xử lý nước (~20 nhân sự) tại Việt Nam. Phân tích các chỉ số tài chính được cung cấp, "
+        "đưa nhận định sắc bén, thực tế, và khuyến nghị hành động ưu tiên. Dùng chuẩn mực VAS. "
+        "CHỈ trả về JSON, không thêm chữ nào khác, dạng: "
+        '{"suc_khoe":"<TOT|KHA|TRUNG_BINH|YEU>",'
+        '"danh_gia":"<đánh giá tổng thể 3-5 câu tiếng Việt>",'
+        '"nhan_dinh":["<gạch đầu dòng nhận định>", "..."],'
+        '"uu_tien":[{"tieu_de":"<vấn đề>","muc_do":"<CAO|TRUNG|THAP>","hanh_dong":"<khuyến nghị cụ thể>"}]}')
+    body = {"model": settings.anthropic_model, "max_tokens": 1500, "system": sys,
+            "messages": [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]}
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"content-type": "application/json", "x-api-key": settings.anthropic_api_key,
+                 "anthropic-version": "2023-06-01"})
+    try:
+        with urllib.request.urlopen(req, timeout=40) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        txt = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+        txt = txt.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        out = json.loads(txt)
+        out["nguon"] = "ANTHROPIC"
+        out.setdefault("suc_khoe", "TRUNG_BINH"); out.setdefault("danh_gia", "")
+        out.setdefault("nhan_dinh", []); out.setdefault("uu_tien", [])
+        return out
+    except Exception:
+        return _tu_van_tai_chinh_fake(payload)
 
-    def band(text, width, size=10):
-        t = Table([[P(text, size, FB, white)]], colWidths=[width])
-        t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), NAVY),
-                               ("LEFTPADDING", (0, 0), (-1, -1), 7),
-                               ("TOPPADDING", (0, 0), (-1, -1), 4),
-                               ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
-        return t
 
-    story = []
+def tu_van_tai_chinh(payload: dict) -> dict:
+    """Cố vấn tài chính AI: nhận {chi_so, canh_bao} → trả phân tích + khuyến nghị."""
+    if settings.ai_provider.upper() == "ANTHROPIC":
+        return _tu_van_tai_chinh_anthropic(payload)
+    return _tu_van_tai_chinh_fake(payload)
 
-    # HEADER
-    logo = []
-    if cong_ty.get("logo_path") and os.path.exists(cong_ty["logo_path"]):
+
+# ============ AGENT PHÂN TÍCH NGUYÊN LÝ THIẾT KẾ ============
+def _pt_thieu(info):
+    thieu = []
+    if not (info.get("mo_ta") or "").strip():
+        thieu.append("Mô tả dự án (nguồn thải, ngành, mục tiêu xả/tái sử dụng)")
+    cts = info.get("chi_tieu") or []
+    if not cts:
+        thieu.append("Chỉ tiêu chất lượng đầu vào/đầu ra")
+    else:
+        if not any(c.get("gia_tri_vao") is not None for c in cts):
+            thieu.append("Giá trị chất lượng ĐẦU VÀO (chưa nhập số nào)")
+        if not any(c.get("gioi_han_ra") is not None for c in cts):
+            thieu.append("Giới hạn ĐẦU RA theo tiêu chuẩn")
+    if not (info.get("cong_suat") or "").strip():
+        thieu.append("Công suất/lưu lượng thiết kế")
+    return thieu
+
+
+def _phan_tich_heuristic(info):
+    """Phân tích sơ bộ DỰA TRÊN dữ liệu đã nhập (không bịa số). Quy tắc kỹ thuật chung, cần kỹ sư thẩm định."""
+    cts = info.get("chi_tieu") or []
+    loai = (info.get("loai_du_an") or "").upper()
+    ten = lambda c: (c.get("ten") or "").lower()
+    def co(*keys):  # chỉ tiêu có giá trị đầu vào và cần xử lý cao
+        for c in cts:
+            if any(k in ten(c) for k in keys) and (c.get("can_xu_ly") or 0) >= 40:
+                return True
+        return False
+    ng, sodo = [], []
+    if loai == "KHI_THAI":
+        if co("bụi", "pm"): ng.append("Tách bụi: cyclone → lọc túi vải/ESP tùy nồng độ và nhiệt độ khí."); sodo.append("Chụp hút → tách bụi")
+        if co("so2", "lưu huỳnh"): ng.append("Khử SO₂ bằng hấp thụ kiềm (vôi/NaOH) – tháp hấp thụ ướt.")
+        if co("nox", "nitơ oxit"): ng.append("Khử NOx bằng SNCR/SCR (xúc tác) tùy nhiệt độ và yêu cầu.")
+        if co("voc", "hữu cơ", "toluene", "xylene"): ng.append("Xử lý VOC: hấp phụ than hoạt tính hoặc thiêu đốt/RTO.")
+        if not ng: ng.append("Chưa đủ chỉ tiêu vượt ngưỡng để khuyến nghị; cần bổ sung dữ liệu đo khí thực tế.")
+        sodo += ["Tháp hấp thụ/khử", "Quạt hút – ống khói (kèm quan trắc)"]
+    else:  # nước
+        cao_mau = co("màu"); cao_codbod = co("cod", "bod"); cao_tss = co("tss", "rắn lơ lửng")
+        cao_np = co("nitơ", "photpho", "amoni", "phosphat"); cao_kl = co("crom", "chì", "đồng", "kẽm", "niken", "asen", "thủy ngân")
+        if cao_tss: ng.append("Tách rắn đầu vào: song chắn → lắng cát → keo tụ/tạo bông → lắng hoặc tuyển nổi (DAF).")
+        if cao_kl: ng.append("Kim loại nặng: kết tủa hóa học theo pH (hydroxit/sunfua) trước xử lý sinh học.")
+        if cao_codbod: ng.append("Hữu cơ (COD/BOD): xử lý sinh học – kỵ khí (UASB) nếu tải cao, sau đó hiếu khí (Aerotank/MBR).")
+        if cao_mau: ng.append("Độ màu (đặc trưng dệt nhuộm): keo tụ + oxy hóa nâng cao (Fenton/O₃) và/hoặc hấp phụ than hoạt tính.")
+        if cao_np: ng.append("Dinh dưỡng N/P: bố trí thiếu khí–hiếu khí (nitrat hóa/khử nitrat) và khử P (sinh học hoặc hóa học).")
+        # tái sử dụng / giới hạn rất chặt
+        if "tái sử dụng" in (info.get("mo_ta") or "").lower() or "ro" in (info.get("mo_ta") or "").lower():
+            ng.append("Mục tiêu tái sử dụng: bổ sung lọc tinh + màng (UF → RO/NF); xử lý dòng thải đậm (reject) bằng AOP.")
+        if not ng: ng.append("Chưa đủ chỉ tiêu vượt ngưỡng để khuyến nghị; cần nhập giá trị đầu vào/đầu ra.")
+        sodo = ["Tiền xử lý (tách rắn/điều hòa)", "Xử lý sinh học (kỵ khí/hiếu khí)"]
+        if cao_mau: sodo.append("Oxy hóa nâng cao/khử màu")
+        sodo += ["Lắng/lọc hoàn thiện", "Khử trùng / xả hoặc tái sử dụng"]
+    return {
+        "tom_tat": f"Phân tích sơ bộ cho dự án {info.get('loai_du_an') or ''} (công suất: {info.get('cong_suat') or 'chưa rõ'}). "
+                   f"Dựa trên {sum(1 for c in cts if c.get('gia_tri_vao') is not None)} chỉ tiêu có số liệu đầu vào.",
+        "nguyen_ly": ng,
+        "so_do_cong_nghe": sodo,
+        "can_kiem_chung": ["Cân bằng vật chất theo lưu lượng & tải lượng thực tế",
+                            "Jar test/bench test xác định hóa chất & liều lượng",
+                            "Kiểm tra tính khả thi mặt bằng và chi phí vận hành"],
+        "du_lieu_thieu": _pt_thieu(info),
+        "nguon": "HEURISTIC",
+        "luu_y": "Đây là gợi ý sơ bộ theo quy tắc kỹ thuật chung, KHÔNG thay thế thiết kế. Cần kỹ sư thẩm định và thí nghiệm thực tế.",
+    }
+
+
+def _phan_tich_anthropic(info):
+    import json as _json, urllib.request
+    sys = ("Bạn là kỹ sư thiết kế hệ thống xử lý nước/khí thải của công ty SVWS. "
+           "Nhiệm vụ: phân tích MÔ TẢ và DỮ LIỆU CHẤT LƯỢNG do người dùng cung cấp để đề xuất NGUYÊN LÝ THIẾT KẾ và SƠ ĐỒ CÔNG NGHỆ. "
+           "RÀNG BUỘC: chỉ dựa trên dữ liệu được cung cấp; KHÔNG bịa số liệu, KHÔNG tự đưa ra giá trị giới hạn quy chuẩn nếu không có trong dữ liệu; "
+           "nếu thiếu dữ liệu thì nêu rõ ở 'du_lieu_thieu'. Đề xuất mang tính định hướng, cần kỹ sư thẩm định. Trả lời bằng tiếng Việt. "
+           "CHỈ trả JSON đúng dạng: {\"tom_tat\":\"\",\"nguyen_ly\":[\"\"],\"so_do_cong_nghe\":[\"\"],\"can_kiem_chung\":[\"\"],\"du_lieu_thieu\":[\"\"]}")
+    user = ("Loại dự án: " + str(info.get("loai_du_an")) + "\n"
+            "Công suất: " + str(info.get("cong_suat")) + "\n"
+            "Tiêu chuẩn đầu ra: " + str(info.get("tieu_chuan_dau_ra")) + "\n"
+            "Mô tả: " + str(info.get("mo_ta") or "(trống)") + "\n"
+            "Chỉ tiêu chất lượng (đầu vào / giới hạn ra / % cần xử lý):\n"
+            + _json.dumps(info.get("chi_tieu") or [], ensure_ascii=False))
+    body = {"model": settings.anthropic_model, "max_tokens": 1500, "system": sys,
+            "messages": [{"role": "user", "content": user}]}
+    req = urllib.request.Request("https://api.anthropic.com/v1/messages",
+                                 data=_json.dumps(body).encode("utf-8"),
+                                 headers={"content-type": "application/json",
+                                          "x-api-key": settings.anthropic_api_key,
+                                          "anthropic-version": "2023-06-01"})
+    with urllib.request.urlopen(req, timeout=45) as r:
+        data = _json.loads(r.read().decode("utf-8"))
+    txt = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+    txt = txt.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    out = _json.loads(txt)
+    for k in ("nguyen_ly", "so_do_cong_nghe", "can_kiem_chung", "du_lieu_thieu"):
+        out.setdefault(k, [])
+    out.setdefault("tom_tat", "")
+    out["nguon"] = "ANTHROPIC"
+    out["luu_y"] = "Đề xuất do AI phân tích, mang tính định hướng — cần kỹ sư thẩm định và thí nghiệm thực tế."
+    return out
+
+
+def phan_tich_thiet_ke(info):
+    if settings.ai_provider.upper() == "ANTHROPIC" and settings.anthropic_api_key:
         try:
-            logo.append(Image(cong_ty["logo_path"], width=26 * mm, height=14 * mm))
+            return _phan_tich_anthropic(info)
         except Exception:
             pass
-    if not logo:
-        logo.append(P("<b>Sóng Việt</b>", 16, FB, NAVY))
-        logo.append(P("WE HAVE SOLUTIONS", 6.5, F, GREY))
-    left = logo + [Spacer(1, 3),
-                   P(f"<b>{cong_ty.get('ten','')}</b>", 9.5, FB),
-                   P(cong_ty.get("dia_chi", ""), 8, F, GREY),
-                   P(f"Tel: {cong_ty.get('tel','')} | Email: {cong_ty.get('email','')}", 8, F, GREY),
-                   P(f"Website: {cong_ty.get('website','')}", 8, F, GREY)]
-
-    info = Table([[P("<b>Mã yêu cầu:</b>", 8.5, FB, NAVY), P(f"<b>{d.get('ma_yeu_cau','')}</b>", 8.5, FB, NAVY)],
-                  [P("Ngày:", 8.5, FB), P(d.get("ngay", ""), 8.5)],
-                  [P("Hiệu lực đến:", 8.5, FB), P(d.get("hieu_luc_den", ""), 8.5)]],
-                 colWidths=[26 * mm, 32 * mm])
-    info.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                              ("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
-    tbox = Table([[P("<b>ĐƠN ĐẶT HÀNG</b>", 15, FB, NAVY, TA_CENTER)],
-                  [P("<i>Purchase Order</i>", 8.5, F, GREY, TA_CENTER)]], colWidths=[62 * mm])
-    tbox.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 1, NAVY),
-                              ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
-    header = Table([[left, [tbox, Spacer(1, 4), info]]], colWidths=[W * 0.54, W * 0.46])
-    header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
-    story += [header, Spacer(1, 8)]
-
-    # NCC
-    story += [band("THÔNG TIN NHÀ CUNG CẤP", W), Spacer(1, 4)]
-    ncc = Table([[P(f"<b>Tên NCC:</b> {d.get('ncc_ten','')}", 9),
-                  P(f"<b>Email:</b> {d.get('ncc_email','')}", 9)],
-                 [P(f"<b>Người liên hệ:</b> {d.get('nguoi_lien_he','')}", 9), ""]],
-                colWidths=[W * 0.5, W * 0.5])
-    ncc.setStyle(TableStyle([("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
-    story += [ncc, Spacer(1, 8)]
-
-    # BẢNG SP/DV
-    story += [band("CHI TIẾT SẢN PHẨM / DỊCH VỤ", W)]
-    head = ["STT", "Tên sản phẩm", "Mô tả / Spec", "SL", "ĐVT", "Đơn giá", "VAT (%)", "Thành tiền (gồm VAT)"]
-    al = [TA_CENTER, TA_LEFT, TA_LEFT, TA_CENTER, TA_CENTER, TA_RIGHT, TA_CENTER, TA_RIGHT]
-    rows = [[P(f"<b>{h}</b>", 8, FB, white, al[i]) for i, h in enumerate(head)]]
-    tam, tong = 0.0, 0.0
-    for i, ln in enumerate(d.get("lines", []), 1):
-        sl = float(ln.get("sl", 0)); gia = float(ln.get("don_gia", 0)); vat = float(ln.get("vat", 0))
-        truoc = sl * gia; sau = truoc * (1 + vat / 100.0); tam += truoc; tong += sau
-        rows.append([P(str(i), 8, F, black, TA_CENTER), P(ln.get("ten", ""), 8),
-                     P(ln.get("mo_ta", "") or "", 8, F, GREY), P(f"{sl:g}", 8, F, black, TA_CENTER),
-                     P(ln.get("dvt", "") or "", 8, F, black, TA_CENTER), P(_tien(gia), 8, F, black, TA_RIGHT),
-                     P(f"{vat:g}%", 8, F, black, TA_CENTER), P(_tien(sau), 8, F, black, TA_RIGHT)])
-    colw = [W * x for x in (0.05, 0.20, 0.27, 0.07, 0.07, 0.13, 0.08, 0.13)]
-    tbl = Table(rows, colWidths=colw, repeatRows=1)
-    tbl.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), NAVY),
-                             ("GRID", (0, 0), (-1, -1), 0.5, LINE), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                             ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [white, LIGHT])]))
-    story += [tbl]
-    foot = Table([[P("Tạm tính (chưa VAT):", 9, FB, black, TA_RIGHT), P(_tien(tam) + " VNĐ", 9, FB, black, TA_RIGHT)]],
-                 colWidths=[W * 0.74, W * 0.26])
-    foot.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.5, LINE),
-                              ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
-    total = Table([[P("<b>TỔNG CỘNG (đã gồm VAT):</b>", 10, FB, white, TA_RIGHT),
-                    P(f"<b>{_tien(tong)} VNĐ</b>", 10, FB, white, TA_RIGHT)]], colWidths=[W * 0.74, W * 0.26])
-    total.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), NAVY),
-                               ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
-    story += [foot, total, Spacer(1, 10)]
-
-    # ĐIỀU KHOẢN & XÁC NHẬN
-    bands = Table([[band("ĐIỀU KHOẢN & GHI CHÚ", W * 0.49, 9), "", band("XÁC NHẬN", W * 0.49, 9)]],
-                  colWidths=[W * 0.49, W * 0.02, W * 0.49])
-    dk = [P(f"• <b>Thanh toán:</b> {d.get('thanh_toan','')}", 8.5), Spacer(1, 2),
-          P(f"• <b>Thời gian giao hàng:</b> {d.get('thoi_gian_giao','')}", 8.5), Spacer(1, 2),
-          P(f"• <b>Địa điểm giao hàng:</b> {d.get('dia_diem_giao','')}", 8.5)]
-    xn = [P(f"<b>Người đặt hàng:</b> {d.get('nguoi_dat','')}", 8.5),
-          Spacer(1, 4), P("<b>Người duyệt:</b>", 8.5, F, black, TA_CENTER)]
-    _img1 = _sign_img(40)
-    if _img1 is not None:
-        xn += [Spacer(1, 2), _img1]
-    elif d.get("nguoi_duyet"):
-        xn.append(P(d.get("nguoi_duyet"), 8.5, F, black, TA_CENTER))
-    body = Table([[dk, "", xn]], colWidths=[W * 0.49, W * 0.02, W * 0.49])
-    body.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("TOPPADDING", (0, 0), (-1, -1), 6)]))
-    story += [bands, body]
-
-    # TRANG 2
-    story.append(PageBreak())
-    story += [band("PHIẾU XÁC NHẬN CỦA NHÀ CUNG CẤP", W), Spacer(1, 8)]
-    story += [P(f"Chúng tôi, <b>{d.get('ncc_ten','')}</b>, xác nhận đã nhận và đồng ý với các điều khoản, "
-                f"sản phẩm/dịch vụ, số lượng, đơn giá và tổng giá trị nêu trong đơn đặt hàng số "
-                f"<b>{d.get('ma_yeu_cau','')}</b> này. Chúng tôi cam kết cung cấp hàng hóa/dịch vụ đúng chất lượng "
-                f"và đúng thời gian giao hàng đã thỏa thuận.", 9, F, black, TA_LEFT, 14), Spacer(1, 8)]
-    cb = "\u2610"
-    conf = Table([[P("<b>Hình thức xác nhận:</b>", 9), P("<b>Ngày dự kiến giao hàng:</b> ...........................", 9)],
-                  [P(f"{cb} Đồng ý toàn bộ đơn hàng", 9), P("<b>Thời hạn bảo hành:</b> ...........................", 9)],
-                  [P(f"{cb} Đồng ý kèm điều chỉnh (ghi rõ bên dưới)", 9), ""]],
-                 colWidths=[W * 0.5, W * 0.5])
-    conf.setStyle(TableStyle([("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
-    story += [conf, Spacer(1, 8), P("<b>Ghi chú / Điều chỉnh của nhà cung cấp:</b>", 9), Spacer(1, 4),
-              P("." * 115, 9, F, GREY), Spacer(1, 2), P("." * 115, 9, F, GREY), Spacer(1, 18)]
-    _img2 = _sign_img(38)
-    sig = Table([[P("<b>ĐẠI DIỆN BÊN MUA</b>", 9.5, FB, NAVY, TA_CENTER),
-                  P("<b>ĐẠI DIỆN NHÀ CUNG CẤP</b>", 9.5, FB, NAVY, TA_CENTER)],
-                 [P(f"<i>{cong_ty.get('ten','')}</i>", 8.5, F, GREY, TA_CENTER),
-                  P("<i>(Ký, ghi rõ họ tên và đóng dấu)</i>", 8.5, F, GREY, TA_CENTER)],
-                 [(_img2 or Spacer(1, 26)), ""]],
-                colWidths=[W * 0.5, W * 0.5])
-    sig.setStyle(TableStyle([("TOPPADDING", (0, 0), (-1, -1), 4),
-                             ("BOTTOMPADDING", (0, 1), (-1, 1), 6 if _img2 else 30),
-                             ("ALIGN", (0, 2), (0, 2), "CENTER"), ("VALIGN", (0, 2), (-1, 2), "TOP")]))
-    story += [sig, Table([["", P("_______________________________", 9, F, GREY, TA_CENTER)],
-                          ["", P("Họ và tên", 8.5, F, GREY, TA_CENTER)]], colWidths=[W * 0.5, W * 0.5]),
-              Spacer(1, 16),
-              P("<b>Cảm ơn quý công ty đã hợp tác và đồng hành cùng Sóng Việt!</b>", 9, FB, NAVY, TA_CENTER),
-              P(f"Ngày in: {d.get('ngay','')} | {cong_ty.get('ten','')}", 8, F, GREY, TA_CENTER)]
-
-    SimpleDocTemplate(path, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm,
-                      topMargin=14 * mm, bottomMargin=14 * mm,
-                      title=f"PO {d.get('ma_yeu_cau','')}").build(story)
-    return path
+    return _phan_tich_heuristic(info)

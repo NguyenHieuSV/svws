@@ -1,14 +1,12 @@
--- ===== Chất lượng đầu vào / chỉ tiêu giới hạn đầu ra =====
-ALTER TABLE du_an ADD COLUMN IF NOT EXISTS tieu_chuan_dau_ra VARCHAR(160);
-
-CREATE TABLE IF NOT EXISTS du_an_chi_tieu (
-    id          BIGSERIAL PRIMARY KEY,
-    du_an_id    BIGINT NOT NULL REFERENCES du_an(id) ON DELETE CASCADE,
-    thu_tu      INT DEFAULT 0,
-    ten         VARCHAR(120) NOT NULL,        -- vd COD, BOD5, TSS, Độ màu, NH4-N, Bụi, SO2...
-    don_vi      VARCHAR(40),                  -- mg/L, Pt-Co, mg/Nm³...
-    gia_tri_vao NUMERIC(18,4),                -- chất lượng đầu vào (đo/thiết kế)
-    gioi_han_ra NUMERIC(18,4),                -- giới hạn kiểm soát đầu ra (theo tiêu chuẩn hoặc tự nhập)
-    ghi_chu     VARCHAR(200)                  -- vd "cột B", "pH 6-9", nguồn giá trị
-);
-CREATE INDEX IF NOT EXISTS idx_dactieu ON du_an_chi_tieu(du_an_id, thu_tu);
+-- ============================================================
+-- Mở rộng cho module Nhân sự/Lương (chạy SAU SVWS_schema.sql)
+--   - tách khoản khấu trừ: BHXH/BHYT/BHTN/TNCN
+--   - dấu vết quy trình duyệt 2 bước: KTT duyệt -> CEO ký
+-- ============================================================
+ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS bhxh           NUMERIC(18,0) NOT NULL DEFAULT 0;
+ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS bhyt           NUMERIC(18,0) NOT NULL DEFAULT 0;
+ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS bhtn           NUMERIC(18,0) NOT NULL DEFAULT 0;
+ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS thue_tncn      NUMERIC(18,0) NOT NULL DEFAULT 0;
+ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS nguoi_duyet_ktt BIGINT REFERENCES nhan_vien(id);
+ALTER TABLE bang_luong ADD COLUMN IF NOT EXISTS nguoi_ky_ceo    BIGINT REFERENCES nhan_vien(id);
+CREATE INDEX IF NOT EXISTS idx_bang_luong_nv ON bang_luong(nhan_vien_id);

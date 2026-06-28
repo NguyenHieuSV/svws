@@ -1,27 +1,27 @@
-from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.orm import Session
+from datetime import datetime, timedelta, timezone
+import bcrypt
 import jwt
-from .database import get_db
-from .security import doc_token
-from .models import NguoiDung, NhanVien
-
-oauth2 = OAuth2PasswordBearer(tokenUrl="auth/login")
+from .config import settings
 
 
-def lay_nguoi_dung_hien_tai(token: str = Depends(oauth2), db: Session = Depends(get_db)) -> NguoiDung:
-    loi = HTTPException(status.HTTP_401_UNAUTHORIZED, "Token không hợp lệ",
-                        headers={"WWW-Authenticate": "Bearer"})
+def bam_mat_khau(mat_khau: str) -> str:
+    # bcrypt giới hạn 72 byte
+    return bcrypt.hashpw(mat_khau.encode("utf-8")[:72], bcrypt.gensalt()).decode("utf-8")
+
+
+def kiem_mat_khau(mat_khau: str, hash_: str) -> bool:
     try:
-        uid = doc_token(token)
-    except jwt.PyJWTError:
-        raise loi
-    nd = db.get(NguoiDung, uid)
-    if nd is None or nd.trang_thai != "HOAT_DONG":
-        raise loi
-    return nd
+        return bcrypt.checkpw(mat_khau.encode("utf-8")[:72], hash_.encode("utf-8"))
+    except ValueError:
+        return False
 
 
-def nhan_vien_id_cua(db: Session, nguoi_dung_id: int):
-    """Tìm nhan_vien tương ứng người dùng (để gán nguoi_tao trên phiếu)."""
-    return db.query(NhanVien.id).filter_by(nguoi_dung_id=nguoi_dung_id).scalar()
+def tao_token(nguoi_dung_id: int) -> str:
+    exp = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
+    return jwt.encode({"sub": str(nguoi_dung_id), "exp": exp},
+                      settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def doc_token(token: str) -> int:
+    data = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    return int(data["sub"])
